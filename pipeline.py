@@ -15,8 +15,8 @@ args = parser.parse_args()
 core_img = '12arnavg/repository@sha256:e42aa3bd202f827b840579e8b0318eb51958088516f58b6af47b68b7a14f2632'
 nirvana_img, working_bkt, billing_project = 'annotation/nirvana:3.14', 'ttn-neb-analysis-files', 'arnav-trial'
 
-'''backend = hb.ServiceBackend(billing_project = billing_project, bucket = working_bkt)
-batch = hb.Batch(name = 'batch', backend = backend)'''
+backend = hb.ServiceBackend(billing_project = billing_project, bucket = working_bkt)
+batch = hb.Batch(name = 'batch', backend = backend)
 
 regions = ['chr2:151483334-151736474', 'chr2:178523989-178809423'] # NEB, TTN
 repetitive_regions = ['chr2:151579109-151588808', 'chr2:151588872-151599459', 'chr2:151599478-151609050',
@@ -26,7 +26,7 @@ lofs = ['splice_acceptor_variant', 'splice_donor_variant', 'stop_gained', 'frame
 in_path = 'gs://' + working_bkt + '/input/' + args.input
 in_csv = hl.hadoop_open(in_path)
 in_df = pd.read_csv(in_csv)
-'''
+
 for index, row in in_df.iterrows():
 
     cram_path = row['cram_path']
@@ -89,7 +89,7 @@ for index, row in in_df.iterrows():
 
             json_job.depends_on(vcf_job)
 
-batch.run()'''
+batch.run()
 
 out_arr = []
 
