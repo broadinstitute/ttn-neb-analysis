@@ -13,7 +13,7 @@ parser.add_argument('-o', '--output', required = True)
 args = parser.parse_args()
 
 core_img = '12arnavg/repository@sha256:e42aa3bd202f827b840579e8b0318eb51958088516f58b6af47b68b7a14f2632'
-nirvana_img, working_bkt, billing_project = 'annotation/nirvana:3.14', 'ttn-neb-analysis-files', 'arnav-trial'
+nirvana_img, working_bkt, billing_project = 'annotation/nirvana:3.14', 'ttn-neb-analysis-files', 'tgg-rare-disease'
 
 backend = hb.ServiceBackend(billing_project = billing_project, bucket = working_bkt)
 batch = hb.Batch(name = 'batch', backend = backend)
@@ -25,69 +25,71 @@ lofs = ['splice_acceptor_variant', 'splice_donor_variant', 'stop_gained', 'frame
 
 in_path = 'gs://' + working_bkt + '/input/' + args.input
 in_csv = hl.hadoop_open(in_path)
-in_df = pd.read_csv(in_csv)
+in_df = pd.read_table(in_csv)
 
 for index, row in in_df.iterrows():
 
-    cram_path = row['cram_path']
-    cram_full_name = cram_path[5:][:-5]
-    cram_arr = cram_full_name.split('/')
-    cram_bkt, cram_name = cram_arr[0], cram_arr[-1]
+    if row['genome_version'] == 38:
 
-    for mask in args.masks:
+        cram_path = row['cram_path']
+        cram_full_name = cram_path[5:][:-5]
+        cram_arr = cram_full_name.split('/')
+        cram_bkt, cram_name = cram_arr[0], cram_arr[-1]
 
-        vcf_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.vcf.gz'
+        for mask in args.masks:
 
-        if not hl.hadoop_is_file(vcf_path):
+            vcf_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.vcf.gz'
 
-            vcf_job = batch.new_bash_job(name = 'vcf_job')
-            vcf_job.image(core_img)
+            if not hl.hadoop_is_file(vcf_path):
 
-            vcf_job.gcsfuse(bucket = cram_bkt, mount_point = cram_bkt)
-            vcf_job.gcsfuse(bucket = working_bkt, mount_point = working_bkt)
+                vcf_job = batch.new_bash_job(name = 'vcf_job')
+                vcf_job.image(core_img)
 
-            ref_path = working_bkt + '/input/Homo_sapiens_assembly38.fasta'
-            regions_str = ' '.join(regions)
-            vcf_job.command(f'samtools view -b {cram_full_name}.cram -T {ref_path} {regions_str} > {cram_name}.bam')
+                vcf_job.gcsfuse(bucket = cram_bkt, mount_point = cram_bkt)
+                vcf_job.gcsfuse(bucket = working_bkt, mount_point = working_bkt)
 
-            vcf_job.command(f'samtools index {cram_name}.bam')
-            vcf_job.command(f'samtools sort -n {cram_name}.bam > {cram_name}.sorted1.bam')
-            vcf_job.command(f'bedtools bamtofastq -i {cram_name}.sorted1.bam -fq {cram_name}.r1.fastq -fq2 {cram_name}.r2.fastq')
+                ref_path = working_bkt + '/input/Homo_sapiens_assembly38.fasta'
+                regions_str = ' '.join(regions)
+                vcf_job.command(f'samtools view -b {cram_full_name}.cram -T {ref_path} {regions_str} > {cram_name}.bam')
 
-            mask_path = working_bkt + '/input/Homo_sapiens_assembly38.chr2.' + mask + '.fasta'
+                vcf_job.command(f'samtools index {cram_name}.bam')
+                vcf_job.command(f'samtools sort -n {cram_name}.bam > {cram_name}.sorted1.bam')
+                vcf_job.command(f'bedtools bamtofastq -i {cram_name}.sorted1.bam -fq {cram_name}.r1.fastq -fq2 {cram_name}.r2.fastq')
 
-            vcf_job.command(f'bwa mem {mask_path} {cram_name}.r1.fastq {cram_name}.r2.fastq > {cram_name}.sam')
+                mask_path = working_bkt + '/input/Homo_sapiens_assembly38.chr2.' + mask + '.fasta'
 
-            vcf_job.command(f'samtools view -b {cram_name}.sam > {cram_name}.bam')
-            vcf_job.command(f'samtools sort {cram_name}.bam > {cram_name}.sorted2.bam')
-            vcf_job.command(f'samtools index {cram_name}.sorted2.bam')
+                vcf_job.command(f'bwa mem {mask_path} {cram_name}.r1.fastq {cram_name}.r2.fastq > {cram_name}.sam')
 
-            vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar AddOrReplaceReadGroups -I {cram_name}.sorted2.bam -LB 1 -PL ILLUMINA -PU 1 -SM out --VALIDATION_STRINGENCY LENIENT -O {cram_name}.sorted.rg.bam')
-            vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar MarkDuplicates --CREATE_INDEX -I {cram_name}.sorted.rg.bam --METRICS_FILE /dev/null -O {cram_name}.sorted.deduped.bam')
-            vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar HaplotypeCaller -I {cram_name}.sorted.deduped.bam -O {cram_name}.vcf.gz -R {mask_path}')
+                vcf_job.command(f'samtools view -b {cram_name}.sam > {cram_name}.bam')
+                vcf_job.command(f'samtools sort {cram_name}.bam > {cram_name}.sorted2.bam')
+                vcf_job.command(f'samtools index {cram_name}.sorted2.bam')
 
-            vcf_job.command(f'cp {cram_name}.vcf.gz {vcf_job.vcf}')
-            batch.write_output(vcf_job.vcf, vcf_path)
-            vcf_job.command(f'cp {cram_name}.vcf.gz.tbi {vcf_job.vcf_index}') 
-            batch.write_output(vcf_job.vcf_index, vcf_path + '.tbi')
-    
-        json_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.json.gz'
+                vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar AddOrReplaceReadGroups -I {cram_name}.sorted2.bam -LB 1 -PL ILLUMINA -PU 1 -SM out --VALIDATION_STRINGENCY LENIENT -O {cram_name}.sorted.rg.bam')
+                vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar MarkDuplicates --CREATE_INDEX -I {cram_name}.sorted.rg.bam --METRICS_FILE /dev/null -O {cram_name}.sorted.deduped.bam')
+                vcf_job.command(f'java -jar gatk-package-4.2.0.0-local.jar HaplotypeCaller -I {cram_name}.sorted.deduped.bam -O {cram_name}.vcf.gz -R {mask_path}')
 
-        if not hl.hadoop_is_file(json_path):
+                vcf_job.command(f'cp {cram_name}.vcf.gz {vcf_job.vcf}')
+                batch.write_output(vcf_job.vcf, vcf_path)
+                vcf_job.command(f'cp {cram_name}.vcf.gz.tbi {vcf_job.vcf_index}') 
+                batch.write_output(vcf_job.vcf_index, vcf_path + '.tbi')
+        
+            json_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.json.gz'
 
-            json_job = batch.new_bash_job(name = 'json_job')
-            json_job.image(nirvana_img)
+            if not hl.hadoop_is_file(json_path):
 
-            json_job.gcsfuse(bucket = working_bkt, mount_point = working_bkt)
+                json_job = batch.new_bash_job(name = 'json_job')
+                json_job.image(nirvana_img)
 
-            json_job.command(f'dotnet /opt/nirvana/Nirvana.dll -c {working_bkt}/Nirvana/Data/Cache/GRCh38/Both -r {working_bkt}/Nirvana/Data/References/Homo_sapiens.GRCh38.Nirvana.dat --sd {working_bkt}/Nirvana/Data/SupplementaryAnnotation/GRCh38 -i {vcf_path[5:]} -o {cram_name}')
+                json_job.gcsfuse(bucket = working_bkt, mount_point = working_bkt)
 
-            json_job.command(f'cp {cram_name}.json.gz {json_job.json}')
-            batch.write_output(json_job.json, json_path)
-            json_job.command(f'cp {cram_name}.json.gz.jsi {json_job.json_index}')
-            batch.write_output(json_job.json_index, json_path + '.jsi')
+                json_job.command(f'dotnet /opt/nirvana/Nirvana.dll -c {working_bkt}/Nirvana/Data/Cache/GRCh38/Both -r {working_bkt}/Nirvana/Data/References/Homo_sapiens.GRCh38.Nirvana.dat --sd {working_bkt}/Nirvana/Data/SupplementaryAnnotation/GRCh38 -i {vcf_path[5:]} -o {cram_name}')
 
-            json_job.depends_on(vcf_job)
+                json_job.command(f'cp {cram_name}.json.gz {json_job.json}')
+                batch.write_output(json_job.json, json_path)
+                json_job.command(f'cp {cram_name}.json.gz.jsi {json_job.json_index}')
+                batch.write_output(json_job.json_index, json_path + '.jsi')
+
+                json_job.depends_on(vcf_job)
 
 batch.run()
 
@@ -95,84 +97,86 @@ out_arr = []
 
 for index, row in in_df.iterrows():
 
-    for mask in args.masks:
+    if row['genome_version'] == 38:
 
-        cram_path = row['cram_path']
-        cram_full_name = cram_path[5:][:-5]
+        for mask in args.masks:
 
-        json_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.json.gz'
-        json_dict = json.loads(hl.hadoop_open(json_path).read())
+            cram_path = row['cram_path']
+            cram_full_name = cram_path[5:][:-5]
 
-        for position in json_dict['positions']:
+            json_path = 'gs://' + working_bkt + '/output/' + mask + '/' + cram_full_name + '.json.gz'
+            json_dict = json.loads(hl.hadoop_open(json_path).read())
 
-            variants = position['variants']
+            for position in json_dict['positions']:
 
-            for i in range(len(variants)):
+                variants = position['variants']
 
-                variant = variants[i]
+                for i in range(len(variants)):
 
-                consequences = []
+                    variant = variants[i]
 
-                if 'transcripts' in variant:
+                    consequences = []
 
-                    for transcript in variant['transcripts']:
+                    if 'transcripts' in variant:
 
-                        consequences.extend(transcript['consequence'])
-                
-                consequences = list(set(consequences))
+                        for transcript in variant['transcripts']:
 
-                is_lof = False
-                lof_consequences = []
+                            consequences.extend(transcript['consequence'])
+                    
+                    consequences = sorted(list(set(consequences)))
 
-                for consequence in consequences:
+                    is_lof = False
+                    lof_consequences = []
 
-                    if consequence in lofs:
+                    for consequence in consequences:
 
-                        is_lof = True
-                        lof_consequences.append(consequence)
+                        if consequence in lofs:
 
-                out_line = [cram_path, position['chromosome'], position['position'], position['samples'][0]['genotype'], position['refAllele'], 
-                    position['altAlleles'][i], variant['variantType'], consequences, lof_consequences, is_lof]
+                            is_lof = True
+                            lof_consequences.append(consequence)
 
-                neb_arr = regions[0].split(':')[1].split('-')
+                    out_line = [cram_path, row['individual_id'], position['chromosome'], position['position'], position['samples'][0]['genotype'], position['refAllele'], 
+                        position['altAlleles'][i], variant['variantType'], ' '.join(consequences), ' '.join(lof_consequences), is_lof]
 
-                if out_line[2] >= int(neb_arr[0]) and out_line[2] <= int(neb_arr[1]):
-                    gene = 'NEB'
-                else:
-                    gene = 'TTN'
-                
-                in_repetitive_regions = False
+                    neb_arr = regions[0].split(':')[1].split('-')
 
-                for repetitive_region in repetitive_regions:
+                    if out_line[3] >= int(neb_arr[0]) and out_line[3] <= int(neb_arr[1]):
+                        gene = 'NEB'
+                    else:
+                        gene = 'TTN'
+                    
+                    in_repetitive_regions = False
 
-                    region_arr = repetitive_region.split(':')[1].split('-')
-    
-                    if out_line[2] >= int(region_arr[0]) and out_line[2] <= int(region_arr[1]):
+                    for repetitive_region in repetitive_regions:
 
-                        in_repetitive_regions = True
-                
-                clinvar_significances = []
+                        region_arr = repetitive_region.split(':')[1].split('-')
+        
+                        if out_line[3] >= int(region_arr[0]) and out_line[3] <= int(region_arr[1]):
 
-                if 'clinvar' in variant:
+                            in_repetitive_regions = True
+                    
+                    clinvar_significances = []
 
-                    for clinvar in variant['clinvar']:
+                    if 'clinvar' in variant:
 
-                        clinvar_significances.extend(clinvar['significance'])
-                
-                clinvar_significances = list(set(clinvar_significances))
+                        for clinvar in variant['clinvar']:
 
-                gnomad_coverage = 0
-                gnomad_allAf = 0
-    
-                if 'gnomad' in variant:
+                            clinvar_significances.extend(clinvar['significance'])
+                    
+                    clinvar_significances = sorted(list(set(clinvar_significances)))
 
-                    gnomad_coverage = variant['gnomad']['coverage']
-                    gnomad_allAf = variant['gnomad']['allAf']
-                
-                out_line.extend([mask, gene, in_repetitive_regions, clinvar_significances, gnomad_coverage, gnomad_allAf])
-                out_arr.append(out_line)
+                    gnomad_coverage = 0
+                    gnomad_allAf = 0
+        
+                    if 'gnomad' in variant:
 
-out_df = pd.DataFrame(out_arr, columns = ['cram_path', 'chromosome', 'position', 'genotype', 'ref_allele', 'alt_allele', 'variant_type', 'consequences',
-    'lof_consequences', 'is_lof', 'mask', 'gene', 'in_repetitive_regions', 'clinvar_significances', 'gnomad_coverage', 'gnomad_allAf'])
+                        gnomad_coverage = variant['gnomad']['coverage']
+                        gnomad_allAf = variant['gnomad']['allAf']
+                    
+                    out_line.extend([mask, gene, in_repetitive_regions, ' '.join(clinvar_significances), gnomad_coverage, gnomad_allAf])
+                    out_arr.append(out_line)
 
-out_df.to_csv(args.output, index = False)
+out_df = pd.DataFrame(out_arr, columns = ['cram_path', 'individual_id', 'chromosome', 'position', 'genotype', 'ref_allele', 'alt_allele', 'variant_type', 
+    'consequences', 'lof_consequences', 'is_lof', 'mask', 'gene', 'in_repetitive_regions', 'clinvar_significances', 'gnomad_coverage', 'gnomad_allAf'])
+
+out_df.to_csv(args.output, sep = '\t', index = False)
